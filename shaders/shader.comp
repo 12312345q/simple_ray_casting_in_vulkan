@@ -1,0 +1,151 @@
+#version 450
+#include "definitions.glsl"
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform UBO {
+    vec3 camera_position;
+    vec3 direction;
+} SceneData;
+layout (binding = 1, rgba32f) uniform image2D colorBuffer;
+
+layout(std140, binding = 2) readonly buffer sphereBuffer {
+	Sphere spheres[];
+} SphereData;
+
+layout(std140, binding = 3) readonly buffer triangleBuffer {
+	Triangle triangles[];
+} TriangleData;
+
+
+const int SCATTER_NUM = 6;
+const int MAX_REFELECT = 35;
+const int MAX_BRANCH_NUM = 10;
+
+HitRecord hitLight(Ray ray){
+    HitRecord hit1=intersectTriangle(ray,TriangleData.triangles[12]);
+    HitRecord hit2=intersectTriangle(ray,TriangleData.triangles[13]);
+
+    HitRecord hitRecord;
+    hitRecord.hit = false;
+    hitRecord.t=-1;
+    hitRecord.reflection = -1;
+    hitRecord.position=vec3(-1);
+    hitRecord.normal=vec3(0);
+    hitRecord.color = vec3(0);
+    hitRecord.target = -1;
+
+    if(hit1.hit){
+        hit1.target=2;
+        return hit1;
+    }
+    if(hit2.hit){
+        hit2.target=2;
+        return hit2;
+    }
+    return hitRecord;
+
+}
+
+HitRecord tracing(Ray ray){
+    vec3 color=vec3(0);
+
+    HitRecord hitResult;
+    hitResult.hit=false;
+    hitResult.t=99999;
+    hitResult.color=vec3(0.8);
+
+    for (int i = 0; i < SphereData.spheres.length(); i++) {
+        HitRecord hit = intersectSphere(ray,SphereData.spheres[i]);
+        if(hit.hit&&hit.t<hitResult.t){
+            hitResult = hit;
+        }
+
+    }
+
+    for (int i = 0; i < TriangleData.triangles.length(); i++) {
+        HitRecord hit = intersectTriangle(ray,TriangleData.triangles[i]);
+        if(hit.hit&&hit.t<hitResult.t){
+            hitResult = hit;
+        }
+
+    }
+
+    HitRecord light=hitLight(ray);
+    if(light.hit&&light.t<=hitResult.t){
+        hitResult=light;
+        return hitResult;
+    }
+
+    return hitResult;
+}
+
+vec3 getRayColor(Ray ray){
+    vec3 colorOne=vec3(1);
+
+    for(int k=0;k<MAX_REFELECT;k++){
+        HitRecord hit = tracing(ray);
+
+        if(!hit.hit){
+            colorOne=vec3(0);
+            break;
+        }else{
+            if(hit.target==2){
+                break;
+            }else{
+                colorOne*=0.9*hit.color;
+                int seed =  int(tan(k*0.2) * gl_GlobalInvocationID.x + gl_GlobalInvocationID.y) * (k+1);
+                vec3 specularReflection = normalize(ray.direction - 2.0 * dot(ray.direction, hit.normal) * hit.normal);
+                vec3 randomCenter = hit.position+specularReflection;
+
+                ray.origin=hit.position;
+                            
+                if(hit.reflection>50){
+                    ray.direction = random_reflection_direction_1(hit.normal,ray.direction,radians(hit.reflection),seed);
+                }else{
+                    ray.direction = random_reflection_direction_0(hit.normal,ray.direction,radians(hit.reflection),seed);
+                }
+
+                       
+            }
+        }
+                
+    }
+    return colorOne;
+}
+
+void main() {
+    ivec2 screen_pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 screen_size = imageSize(colorBuffer);
+    float horizontalCoefficient = ((float(screen_pos.x) * 2 - screen_size.x) / screen_size.y);
+    float verticalCoefficient = -((float(screen_pos.y) * 2 - screen_size.y) / screen_size.y);
+
+    Camera camera;
+    camera.position = SceneData.camera_position;
+    camera.direction = SceneData.direction;
+
+    vec3 color = vec3(1);
+    
+
+    for(int i=-SCATTER_NUM;i<=SCATTER_NUM;i++){
+        for(int j=-SCATTER_NUM;j<=SCATTER_NUM;j++){
+
+            vec2 target = vec2(horizontalCoefficient , verticalCoefficient)+vec2((1/float(screen_size.y)))*vec2(i,j)/(SCATTER_NUM*2+1);
+            Ray ray;
+            ray.origin = camera.position+vec3(target , 0)+camera.direction;
+            ray.direction = normalize(vec3(target , 0)+camera.direction);
+            vec3 colorOne=getRayColor(ray);
+
+
+            color+=colorOne;
+        }
+    }
+    color/=pow(2*SCATTER_NUM+1,2);
+
+ 
+
+    imageStore(colorBuffer, screen_pos, vec4(color,1.0));
+    
+
+}
+
+
